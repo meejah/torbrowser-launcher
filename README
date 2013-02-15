@@ -1,3 +1,11 @@
+Tor Browser Launcher is a GTK desktop application. This is the javascript branch, while I was experimenting with writing modern GTK3 programs using gjs:
+
+http://developer.gnome.org/gnome-devel-demos/unstable/js.html.en
+https://live.gnome.org/Gjs
+
+I love programming in javascript, but sadly I'm porting this project to python because gjs is giving me too much trouble with HTTP requests, binary file I/O, etc.
+
+
 Tor Browser Launcher
 ====================
 
