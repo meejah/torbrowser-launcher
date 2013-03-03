@@ -14,7 +14,7 @@ from twisted.web.http_headers import Headers
 from twisted.internet.protocol import Protocol
 from twisted.internet.ssl import ClientContextFactory
 
-from OpenSSL.SSL import Context, VERIFY_PEER, VERIFY_FAIL_IF_NO_PEER_CERT
+from OpenSSL.SSL import Context, VERIFY_PEER, VERIFY_FAIL_IF_NO_PEER_CERT, Error as SSLError
 from OpenSSL.crypto import load_certificate, FILETYPE_PEM
 
 class VerifyTorProjectCert(ClientContextFactory):
@@ -168,8 +168,10 @@ class TorBrowserLauncher:
             tarball_filename = 'tor-browser-gnu-linux-'+self.architecture+'-'+tbb_version+'-dev-'+self.language+'.tar.gz'
             self.paths['file']['tarball'] = tbb_data+'/download/'+tarball_filename
             self.paths['file']['tarball_sig'] = tbb_data+'/download/'+tarball_filename+'.asc'
-            self.paths['url']['tarball'] = 'https://www.torproject.org/dist/torbrowser/linux/'+tarball_filename
-            self.paths['url']['tarball_sig'] = 'https://www.torproject.org/dist/torbrowser/linux/'+tarball_filename+'.asc'
+            self.paths['url']['tarball'] = 'https://micahflee.com/dist/torbrowser/linux/'+tarball_filename
+            self.paths['url']['tarball_sig'] = 'https://micahflee.com/dist/torbrowser/linux/'+tarball_filename+'.asc'
+            #self.paths['url']['tarball'] = 'https://www.torproject.org/dist/torbrowser/linux/'+tarball_filename
+            #self.paths['url']['tarball_sig'] = 'https://www.torproject.org/dist/torbrowser/linux/'+tarball_filename+'.asc'
             self.paths['filename']['tarball'] = tarball_filename
             self.paths['filename']['tarball_sig'] = tarball_filename+'.asc'
 
@@ -389,10 +391,18 @@ class TorBrowserLauncher:
         else:
             print "FINISHED", msg
             ## FIXME handle errors
+    
+    def download_error_ssl(self, failure):
+        print "Download error, is it an SSL error?"
+        r = failure.trap(SSLError)
+        print 'trap', r
+        self.set_gui('error', "SSL Error connecting to torproject.org", [], False)
+        self.clear_ui()
+        self.build_ui()
 
-    def download_error(self, f):
-        print "Download error", f
-        self.set_gui('error', "Error starting download:\n\n%s\n\nAre you connected to the internet?" % f.value, [], False)
+    def download_error(self, failure):
+        print "Other download error", failure
+        self.set_gui('error', "Error starting download:\n\n%s\n\nAre you connected to the internet?" % failure.value, [], False)
         self.clear_ui()
         self.build_ui()
 
@@ -409,7 +419,7 @@ class TorBrowserLauncher:
                           None)
 
         self.file_download = open(path, 'w')
-        d.addCallback(self.response_received).addErrback(self.download_error)
+        d.addCallback(self.response_received).addErrback(self.download_error_ssl).addErrback(self.download_error)
 
     def attempt_update(self):
         # load the update check file
