@@ -3,18 +3,24 @@ from twisted.internet import gtk2reactor
 gtk2reactor.install()
 from twisted.internet import reactor
 
+import unittest                         # see bottom of this file for tests
+import tempfile
+
 import pygtk
 pygtk.require('2.0')
 import gtk
 
 import os, sys, subprocess, locale, urllib2, gobject, time, pickle, json
 
-from twisted.web.client import Agent, ResponseDone
+from twisted.web.client import Agent, ResponseDone, ResponseFailed
 from twisted.web.http_headers import Headers
+from twisted.web.iweb import IResponse
 from twisted.internet.protocol import Protocol
 from twisted.internet.ssl import ClientContextFactory
+from twisted.internet import defer
+from zope.interface import implements
 
-from OpenSSL.SSL import Context, VERIFY_PEER, VERIFY_FAIL_IF_NO_PEER_CERT, Error as SSLError
+from OpenSSL import SSL
 from OpenSSL.crypto import load_certificate, FILETYPE_PEM
 
 class VerifyTorProjectCert(ClientContextFactory):
@@ -25,7 +31,7 @@ class VerifyTorProjectCert(ClientContextFactory):
     def getContext(self, host, port):
         ctx = ClientContextFactory.getContext(self)
         ctx.set_verify_depth(0)
-        ctx.set_verify(VERIFY_PEER | VERIFY_FAIL_IF_NO_PEER_CERT, self.verifyHostname)
+        ctx.set_verify(SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, self.verifyHostname)
         return ctx
 
     def verifyHostname(self, connection, cert, errno, depth, preverifyOK):
@@ -34,6 +40,10 @@ class VerifyTorProjectCert(ClientContextFactory):
 
 class TorBrowserLauncher:
     def __init__(self):
+        ## FIXME this is just to facilitate testing w/o seeing the
+        ## GUI. There is probably a better solution.
+
+    def do_init(self):
         # initialize the app
         self.set_gui(None, '', [])
         self.discover_arch_lang()
@@ -392,19 +402,35 @@ class TorBrowserLauncher:
             print "FINISHED", msg
             ## FIXME handle errors
     
-    def download_error_ssl(self, failure):
-        print "Download error, is it an SSL error?"
-        r = failure.trap(SSLError)
-        print 'trap', r
-        self.set_gui('error', "SSL Error connecting to torproject.org", [], False)
+    def download_error(self, failure):
+        if isinstance(failure.value, ResponseFailed):
+            rf = failure.value
+            errmsg = 'Response failed:\n'
+            for reason in rf.reasons:
+                # each reason is itself a Failure
+                if isinstance(reason.value, SSL.Error):
+                    err = reason.value
+                    errmsg += '  OpenSSL error %s "%s"\n' % (err.message[0][1], err.message[0][2])
+
+            self.set_gui('error', "Error connecting to torproject.org:\n" + errmsg, [], False)
+
+        else:
+            self.set_gui('error', "Unknown error connecting to torproject.org:\n" + str(failure), [], False)
+
         self.clear_ui()
         self.build_ui()
 
-    def download_error(self, failure):
-        print "Other download error", failure
-        self.set_gui('error', "Error starting download:\n\n%s\n\nAre you connected to the internet?" % failure.value, [], False)
-        self.clear_ui()
-        self.build_ui()
+        return None
+
+    def create_download_agent(self, url):
+        """
+        This is separate to make testing easier.
+        """
+
+        agent = Agent(reactor, VerifyTorProjectCert(self.paths['file']['torproject_pem']))
+        d = agent.request('GET', url,
+                          Headers({'User-Agent': ['torbrowser-launcher']}))
+        return d
 
     def download(self, name, url, path):
         # initialize the progress bar
@@ -413,13 +439,11 @@ class TorBrowserLauncher:
         self.progressbar.show()
         self.refresh_gtk()
 
-        agent = Agent(reactor, VerifyTorProjectCert(self.paths['file']['torproject_pem']))
-        d = agent.request('GET', url,
-                          Headers({'User-Agent': ['torbrowser-launcher']}),
-                          None)
+        d = self.create_download_agent(url)
 
         self.file_download = open(path, 'w')
-        d.addCallback(self.response_received).addErrback(self.download_error_ssl).addErrback(self.download_error)
+        d.addCallback(self.response_received).addErrback(self.download_error)
+        return d
 
     def attempt_update(self):
         # load the update check file
@@ -552,4 +576,55 @@ if __name__ == "__main__":
     print 'https://github.com/micahflee/torbrowser-launcher'
 
     app = TorBrowserLauncher()
+    app.do_init()                       # hack to make testing possible; FIXME
 
+
+class FakeResponse(object):
+    implements(IResponse)
+
+    version = ('HTTPS', 1, 1)
+    code = 200
+    phrase = 'Testing SSL error'
+    headers = Headers({})
+    length = 10
+
+    def deliverBody(self, proto):
+        self.proto = proto
+
+    def actuallyDeliverBody(self):
+        self.proto.transport.write('X' * self.length)
+
+
+class DownloadTest(unittest.TestCase):
+
+    def setUp(self):
+        def do_nothing(*args, **kwargs):
+            pass
+
+        self.launcher = TorBrowserLauncher()
+        self.launcher.run_task = do_nothing
+        self.launcher.clear_ui = do_nothing
+        self.launcher.build_ui = do_nothing
+        self.launcher.refresh_gtk = do_nothing
+        self.launcher.progressbar = gtk.ProgressBar(adjustment=None)
+        self.launcher.set_gui = self.set_gui
+
+    def tearDown(self):
+        os.unlink(self.temppath)
+
+    def set_gui(self, state, message, tasks, autostart=True):
+        self.assertEqual(state, 'error')
+
+    def create_download_agent(self, url):
+        return defer.fail(SSL.Error())
+
+
+    def test_ssl_error(self):
+        """
+        Not really that great a test, but lets me simulate at least
+        one SSL problem.
+        """
+
+        self.launcher.create_download_agent = self.create_download_agent
+        d = self.launcher.download('test', 'scheme://awesome', '/dev/null')
+        return d
